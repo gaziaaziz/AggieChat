@@ -12,14 +12,21 @@ Usage:
 """
 
 import os
+import re
 import json
 import sqlite3
 import argparse
 from pathlib import Path
 
-from config import CHUNKS_DIR
+from config import CHUNKS_DIR, FTS_DB_PATH
+from utils import date_to_int
 
-FTS_DB_PATH = "fts_index.db"
+# Common words that add noise to an OR-style keyword query
+STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by",
+    "is", "are", "was", "were", "be", "been", "it", "its", "this", "that", "what",
+    "who", "when", "where", "which", "how", "did", "do", "does", "about", "from", "as",
+}
 
 
 def get_connection() -> sqlite3.Connection:
@@ -68,8 +75,10 @@ def get_indexed_ids(conn: sqlite3.Connection) -> set[str]:
 
 
 def build_index(reset: bool = False):
-    if reset and os.path.exists(FTS_DB_PATH):
-        os.remove(FTS_DB_PATH)
+    if reset:
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(FTS_DB_PATH + suffix):
+                os.remove(FTS_DB_PATH + suffix)
         print("[fts_index] reset — existing index deleted")
 
     conn = get_connection()
@@ -85,7 +94,7 @@ def build_index(reset: bool = False):
     for path in chunk_files:
         total += 1
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 chunk = json.load(f)
         except Exception as e:
             print(f"[fts_index] could not read {path.name}: {e}")
@@ -97,7 +106,7 @@ def build_index(reset: bool = False):
             continue
 
         date_str = chunk.get("date", "")
-        date_int = int(date_str.replace("-", "")) if date_str else 0
+        date_int = date_to_int(date_str)
 
         conn.execute("""
             INSERT INTO chunks_meta
@@ -143,15 +152,20 @@ def build_index(reset: bool = False):
 
 def sanitize_fts_query(query: str) -> str:
     """
-    Clean user query for FTS5 without stripping meaningful content.
-    Only removes & which causes SQLite tokenizer errors, then
-    collapses whitespace. Intentionally preserves hyphens, apostrophes,
-    and all letters so BM25 matching on historical text is not degraded.
+    Turn free text into a safe FTS5 query: every word becomes a quoted token and the
+    tokens are OR-ed, so punctuation (', -, ?, :, ...) can never be parsed as FTS5
+    syntax and a long natural-language question still matches on its key terms.
+    BM25 ranking puts chunks matching more/rarer terms first.
+    Returns "" if the query has no usable words.
     """
-    import re
-    query = query.replace("&", " ")
-    query = re.sub(r'\s+', ' ', query)
-    return query.strip()
+    tokens = re.findall(r"\w+", query.lower())
+    keep = [t for t in tokens if len(t) > 1 and t not in STOPWORDS] or tokens
+    seen, unique = set(), []
+    for t in keep:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return " OR ".join(f'"{t}"' for t in unique)
 
 
 def validate():
@@ -162,6 +176,9 @@ def validate():
 
     query  = "student life campus Texas A&M"
     safe_q = sanitize_fts_query(query)
+    if not safe_q:
+        print("[fts_index] empty query")
+        return
     print(f"\n[fts_index] test query: '{query}' -> sanitized: '{safe_q}'")
     print("-" * 60)
 
