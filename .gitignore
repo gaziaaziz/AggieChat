@@ -1,0 +1,22 @@
+# Data and generated indexes (rebuild with the pipeline)
+data/
+chroma_db/
+*.db
+*.sqlite*
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Python / OS / editor
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
+
+# Local env patch scratch files
+*_env_patch.py
