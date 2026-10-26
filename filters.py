@@ -13,14 +13,13 @@ Design principles:
 """
 
 import re
-from config import TITLES
 
-# Inverted map: lowercase publication name keywords → lccn
-# Each entry is a list of aliases that should map to that lccn
+# Publication name → lccn. Only unambiguous names: bare "aggie" (as in "Aggie football")
+# and "reveille" (the mascot) are NOT aliases — they appear in queries about every title.
 PUBLICATION_ALIASES = {
-    "sn86088544": ["battalion"],
-    "sn84009780": ["texas aggie", "aggie"],
-    "sn37020267": ["daily bulletin", "bulletin", "reveille"],
+    "sn86088544": ["the battalion", "battalion", "the batt"],
+    "sn84009780": ["texas aggie"],
+    "sn37020267": ["daily bulletin"],
 }
 
 # Build a flat lookup: keyword → lccn (sorted longest-first to avoid partial matches)
@@ -62,19 +61,19 @@ def _extract_date_range(query: str) -> tuple[int, int] | None:
     q = query.lower()
 
     # Decade: "1960s", "the 1960s", "in the 1970s"
-    decade_match = re.search(r'\b(1[89]\d)0s\b', q)
+    decade_match = re.search(r'\b(1[89]\d|20[0-2])0s\b', q)
     if decade_match:
         decade_start = int(decade_match.group(1) + "0")
         return (int(f"{decade_start}0101"), int(f"{decade_start + 9}1231"))
 
     # Explicit year with preposition: "in 1963", "during 1975", "of 1920"
-    prep_year_match = re.search(r'\b(?:in|during|of|from|around)\s+(1[89]\d{2})\b', q)
+    prep_year_match = re.search(r'\b(?:in|during|of|from|around)\s+(1[89]\d{2}|20[0-2]\d)\b', q)
     if prep_year_match:
         year = prep_year_match.group(1)
         return (int(f"{year}0101"), int(f"{year}1231"))
 
     # Bare 4-digit year (e.g. "Battalion 1975 football")
-    bare_year_match = re.search(r'\b(1[89]\d{2})\b', q)
+    bare_year_match = re.search(r'\b(1[89]\d{2}|20[0-2]\d)\b', q)
     if bare_year_match:
         year = bare_year_match.group(1)
         return (int(f"{year}0101"), int(f"{year}1231"))

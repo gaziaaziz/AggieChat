@@ -10,8 +10,10 @@ WHERE clauses before FTS5 ranking, mirroring the ChromaDB metadata
 filter on the dense branch.
 """
 
-import sqlite3
-from fts_index import FTS_DB_PATH, get_connection
+import os
+
+from config import FTS_DB_PATH
+from fts_index import get_connection, sanitize_fts_query
 
 
 def _build_sql_where(where: dict | None) -> tuple[str, list]:
@@ -68,15 +70,18 @@ def bm25_search(
     Fails open: returns [] on any error so a broken FTS index never
     crashes the pipeline.
     """
+    conn = None
     try:
+        if not os.path.exists(FTS_DB_PATH):
+            print(f"[bm25] index not found at {FTS_DB_PATH} — run fts_index.py first")
+            return []
+
+        safe_query = sanitize_fts_query(query)
+        if not safe_query:
+            return []
+
         conn = get_connection()
-
         where_clause, where_params = _build_sql_where(where)
-
-        # Escape FTS5 special characters in the query
-        import re
-        safe_query = query.replace("&", " ")
-        safe_query = re.sub(r'\s+', ' ', safe_query).strip()
 
         sql = f"""
             SELECT
@@ -93,7 +98,6 @@ def bm25_search(
 
         params = [safe_query] + where_params + [top_k]
         rows   = conn.execute(sql, params).fetchall()
-        conn.close()
 
         chunks = []
         for row in rows:
@@ -124,3 +128,7 @@ def bm25_search(
     except Exception as e:
         print(f"[bm25] search failed, returning empty: {e}")
         return []
+
+    finally:
+        if conn is not None:
+            conn.close()
