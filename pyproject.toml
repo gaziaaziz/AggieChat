@@ -1,0 +1,19 @@
+[project]
+name = "aggiechat"
+version = "0.1.0"
+description = "RAG pipeline over historical Texas A&M newspapers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.28",
+    "tiktoken>=0.7",
+    "chromadb>=1.0",
+    "sentence-transformers>=3.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.0",
+    "streamlit>=1.30",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
