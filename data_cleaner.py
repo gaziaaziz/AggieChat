@@ -37,27 +37,30 @@ def quality_score(text: str) -> float:
 
 
 def clean_ocr(text: str) -> str | None:
-    # Step 1 — Rejoin hyphenated line breaks (belt-and-suspenders)
-    text = re.sub(r"(\w+)-\s+(\w)", lambda m: m.group(1) + m.group(2), text)
+    # Step 1 — Rejoin words hyphenated across a line break (needs newline-preserved OCR)
+    text = re.sub(r"(\w+)-[ \t]*\n[ \t]*(\w)", lambda m: m.group(1) + m.group(2), text)
 
-    # Step 2 — Strip pipe separators (modern layout artifacts: | | |)
-    text = re.sub(r"\s*\|\s*", " ", text)
+    # Step 2 — Strip pipe separators (modern layout artifacts: | | |), keeping line breaks
+    text = re.sub(r"[ \t]*\|[ \t]*", " ", text)
 
-    # Step 3 — Strip masthead / staff box (modern issues)
+    # Step 3 — Strip masthead / staff box (modern issues). The masthead sits at the
+    # bottom of a page, so only cut when the trigger is in the second half; a trigger
+    # earlier than that is more likely a mid-article mention and cutting would lose content.
     upper = text.upper()
     cutoff = len(text)
     for trigger in MASTHEAD_TRIGGERS:
         idx = upper.find(trigger)
-        if idx != -1 and idx < cutoff:
+        if idx != -1 and idx >= len(text) // 2 and idx < cutoff:
             cutoff = idx
     text = text[:cutoff]
 
-    # Step 4 — Strip ad lines (short lines with price or phone)
+    # Step 4 — Strip ad lines (very short lines that are mostly a price or phone number)
     lines = text.splitlines()
     cleaned_lines = []
     for line in lines:
         stripped = line.strip()
-        if len(stripped) < 40 and (_PRICE_RE.search(stripped) or _PHONE_RE.search(stripped)):
+        if (len(stripped) < 40 and len(stripped.split()) <= 6
+                and (_PRICE_RE.search(stripped) or _PHONE_RE.search(stripped))):
             continue
         cleaned_lines.append(line)
     text = "\n".join(cleaned_lines)
@@ -104,7 +107,7 @@ def chunk_text(text: str) -> list[str]:
 
 
 def already_chunked(doc_id: str) -> bool:
-    return (Path(CHUNKS_DIR) / f"{doc_id}_chunk0.json").exists()
+    return any(Path(CHUNKS_DIR).glob(f"{doc_id}_chunk*.json"))
 
 
 def write_chunk(record: dict, chunk_index: int, chunk_text: str) -> None:
