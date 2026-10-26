@@ -12,13 +12,31 @@ from config import BASE_URL, DELAY, MAX_PAGES, RAW_DIR, TITLES, RESTRICTED_LCCNS
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "TAMULibraryResearch/1.0 (research harvester)"})
 TIMEOUT = 20
+RETRIES = 3
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _get(url: str) -> requests.Response:
+    """GET with retries and exponential backoff on transient failures."""
+    last_exc: Exception | None = None
+    for attempt in range(RETRIES):
+        try:
+            r = SESSION.get(url, timeout=TIMEOUT)
+            if r.status_code in RETRY_STATUS:
+                last_exc = requests.HTTPError(f"{r.status_code} for {url}", response=r)
+            else:
+                r.raise_for_status()
+                return r
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+        time.sleep(2 ** attempt)
+    raise last_exc
 
 def fetch_issue_dates(lccn: str) -> list[str]:
     """Return sorted list of all issue date strings for a title."""
     url = f"{BASE_URL}/lccn/{lccn}.json"
     try:
-        r = SESSION.get(url, timeout=TIMEOUT)
-        r.raise_for_status()
+        r = _get(url)
         manifests = r.json().get("manifests", [])
         if not manifests:
             print(f"  WARNING: no issues found for {lccn}")
@@ -32,37 +50,48 @@ def fetch_issue_dates(lccn: str) -> list[str]:
 
 def fetch_issue_manifest(lccn: str, date: str) -> dict | None:
     """Return the IIIF manifest for one issue, or None on failure."""
-    url = f"{BASE_URL}/lccn/{lccn}/{date}/ed-1.json"
-    try:
-        r = SESSION.get(url, timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"  WARNING: manifest failed {lccn}/{date}: {e}")
-        return None
+    last_error: Exception | None = None
+    for edition in (1, 2):
+        url = f"{BASE_URL}/lccn/{lccn}/{date}/ed-{edition}.json"
+        try:
+            manifest = _get(url).json()
+            manifest["_edition"] = edition
+            return manifest
+        except Exception as e:
+            last_error = e
+            if not (isinstance(e, requests.HTTPError) and e.response is not None
+                    and e.response.status_code == 404):
+                break  # only a 404 means "try the next edition"
+    print(f"  WARNING: manifest failed {lccn}/{date}: {last_error}")
+    return None
 
 
 def fetch_ocr(ocr_url: str) -> str | None:
     """Fetch and parse ALTO XML OCR for one page. Returns plain text or None."""
     try:
-        r = SESSION.get(ocr_url, timeout=TIMEOUT)
-        r.raise_for_status()
-        text = _parse_alto_xml(r.text)
+        text = _parse_alto_xml(_get(ocr_url).text)
         return text if len(text) >= 100 else None
-    except Exception:
+    except Exception as e:
+        print(f"  WARNING: OCR fetch failed {ocr_url}: {e}")
         return None
 
 
 def _parse_alto_xml(xml_text: str) -> str:
-    """Extract word strings from ALTO XML format."""
+    """Extract text from ALTO XML, one line of text per TextLine (newline-separated)."""
     try:
         root = ET.fromstring(xml_text)
-        words = [
-            elem.attrib["CONTENT"]
-            for elem in root.iter()
-            if elem.tag.endswith("String") and "CONTENT" in elem.attrib
-        ]
-        return " ".join(words)
+        lines = []
+        for line in root.iter():
+            if not line.tag.endswith("TextLine"):
+                continue
+            words = [
+                el.attrib["CONTENT"]
+                for el in line
+                if el.tag.endswith("String") and "CONTENT" in el.attrib
+            ]
+            if words:
+                lines.append(" ".join(words))
+        return "\n".join(lines)
     except Exception:
         return ""
     
@@ -86,11 +115,11 @@ def get_ocr_url(canvas: dict) -> str | None:
     return _canvas_url(canvas, "ocr.xml", "seeAlso")
 
 
-def get_page_url(canvas: dict, lccn: str, date: str, seq: int) -> str:
+def get_page_url(canvas: dict, lccn: str, date: str, seq: int, edition: int = 1) -> str:
     """Return the human-readable page URL for citation purposes."""
     return (
         _canvas_url(canvas, "text/html", "rendering")
-        or f"{BASE_URL}/lccn/{lccn}/{date}/ed-1/seq-{seq}/"
+        or f"{BASE_URL}/lccn/{lccn}/{date}/ed-{edition}/seq-{seq}/"
     )
 
 
@@ -226,7 +255,6 @@ def harvest(
                 continue
 
             issue_title = manifest.get("label", title_name)
-            issue_saved = 0
 
             for seq, canvas in enumerate(canvases, start=1):
                 if already_saved(lccn, date, seq):
@@ -250,7 +278,7 @@ def harvest(
                     "title":     issue_title,
                     "date":      date,
                     "page":      seq,
-                    "url":       get_page_url(canvas, lccn, date, seq),
+                    "url":       get_page_url(canvas, lccn, date, seq, manifest.get("_edition", 1)),
                     "ocr_text":  ocr,
                     "source":    "open_oni",
                     "harvested": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
@@ -258,7 +286,6 @@ def harvest(
 
                 save_page(record)
                 saved       += 1
-                issue_saved += 1
                 total_saved += 1
 
                 print(

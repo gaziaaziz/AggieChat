@@ -14,12 +14,14 @@ from config import (
     EMBED_DIMENSIONS,
     EMBED_MODEL,
     OLLAMA_URL,
+    EMBED_TIMEOUT,
 )
+from utils import date_to_int
 
 
 def test_ollama() -> bool:
     try:
-        r = requests.post(OLLAMA_URL, json={"model": EMBED_MODEL, "prompt": "test"}, timeout=10)
+        r = requests.post(OLLAMA_URL, json={"model": EMBED_MODEL, "prompt": "test"}, timeout=EMBED_TIMEOUT)
         vec = r.json().get("embedding", [])
         if len(vec) == EMBED_DIMENSIONS:
             print(f"Ollama OK — {EMBED_MODEL} ready ({EMBED_DIMENSIONS}d)")
@@ -33,7 +35,7 @@ def test_ollama() -> bool:
 
 def embed(text: str, _counter: list[int] | None = None) -> list[float] | None:
     try:
-        r = requests.post(OLLAMA_URL, json={"model": EMBED_MODEL, "prompt": text}, timeout=30)
+        r = requests.post(OLLAMA_URL, json={"model": EMBED_MODEL, "prompt": text}, timeout=EMBED_TIMEOUT)
         r.raise_for_status()
         vec = r.json().get("embedding")
         if _counter is not None:
@@ -74,6 +76,15 @@ def index_chunks(collection, reset: bool = False) -> None:
     failed  = 0
     indexed = 0
     counter = [0]
+    batch   = {"ids": [], "embeddings": [], "documents": [], "metadatas": []}
+
+    def flush() -> None:
+        nonlocal indexed
+        if batch["ids"]:
+            collection.add(**batch)
+            indexed += len(batch["ids"])
+            for k in batch:
+                batch[k] = []
 
     for path in chunk_files:
         with open(path, encoding="utf-8") as f:
@@ -89,23 +100,25 @@ def index_chunks(collection, reset: bool = False) -> None:
             failed += 1
             continue
 
-        collection.add(
-            ids=[chunk_id],
-            embeddings=[vector],
-            documents=[rec["text"]],
-            metadatas=[{
-                "doc_id":      rec["doc_id"],
-                "lccn":        rec["lccn"],
-                "title":       rec["title"],
-                "date":        rec["date"],
-                "page":        int(rec["page"]),
-                "url":         rec["url"],
-                "source":      rec["source"],
-                "chunk_index": int(rec["chunk_index"]),
-                "token_count": int(rec["token_count"]),
-            }],
-        )
-        indexed += 1
+        batch["ids"].append(chunk_id)
+        batch["embeddings"].append(vector)
+        batch["documents"].append(rec["text"])
+        batch["metadatas"].append({
+            "doc_id":      rec["doc_id"],
+            "lccn":        rec["lccn"],
+            "title":       rec["title"],
+            "date":        rec["date"],
+            "date_int":    date_to_int(rec["date"]),
+            "page":        int(rec["page"]),
+            "url":         rec["url"],
+            "source":      rec["source"],
+            "chunk_index": int(rec["chunk_index"]),
+            "token_count": int(rec["token_count"]),
+        })
+        if len(batch["ids"]) >= BATCH_SIZE:
+            flush()
+
+    flush()
 
     print(f"\nIndexed: {indexed} | Skipped: {skipped} | Failed: {failed}")
     print(f"ChromaDB total: {collection.count()}")
