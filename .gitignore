@@ -20,3 +20,4 @@ venv/
 
 # Local env patch scratch files
 *_env_patch.py
+uv.lock
