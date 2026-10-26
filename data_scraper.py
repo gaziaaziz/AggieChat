@@ -41,7 +41,7 @@ def fetch_issue_dates(lccn: str) -> list[str]:
         if not manifests:
             print(f"  WARNING: no issues found for {lccn}")
             return []
-        dates = sorted(m["label"] for m in manifests if m.get("label"))
+        dates = sorted({m["label"] for m in manifests if m.get("label")})  # de-duplicated
         return dates
     except Exception as e:
         print(f"  WARNING: could not fetch issue list for {lccn}: {e}")
@@ -84,11 +84,17 @@ def _parse_alto_xml(xml_text: str) -> str:
         for line in root.iter():
             if not line.tag.endswith("TextLine"):
                 continue
-            words = [
-                el.attrib["CONTENT"]
-                for el in line
-                if el.tag.endswith("String") and "CONTENT" in el.attrib
-            ]
+            words = []
+            for el in line:
+                if not el.tag.endswith("String") or "CONTENT" not in el.attrib:
+                    continue
+                subst = el.attrib.get("SUBS_TYPE") or el.attrib.get("SUBST_TYPE")
+                if subst == "HypPart2":
+                    continue  # second half of a hyphenated word; the first half carries the full word
+                word = el.attrib["CONTENT"]
+                if subst == "HypPart1" and el.attrib.get("SUBS_CONTENT"):
+                    word = el.attrib["SUBS_CONTENT"]
+                words.append(word)
             if words:
                 lines.append(" ".join(words))
         return "\n".join(lines)
